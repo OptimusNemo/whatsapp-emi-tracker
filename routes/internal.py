@@ -13,9 +13,9 @@ router = APIRouter(
 
 
 @router.post("/send-reminders")
-def send_reminders(
-    x_api_key: str = Header(None)
-):
+def send_reminders(x_api_key: str = Header(None)):
+    print("Configured API KEY:", INTERNAL_API_KEY)
+    print("Received API KEY:", x_api_key)
 
     if x_api_key != INTERNAL_API_KEY:
         raise HTTPException(

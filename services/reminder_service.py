@@ -7,7 +7,7 @@ from models import Loan, EMI
 from services.notification_service import send_whatsapp
 
 
-def send_monthly_reminders():
+def send_monthly_reminders(force=False):
 
     processed_loans = 0
     messages_sent = 0
@@ -23,7 +23,7 @@ def send_monthly_reminders():
         print("=" * 60)
 
         # Reminder only on the 5th
-        if today.day != 5:
+        if today.day != 5 and not force:
             print("Today is not reminder day.")
 
             return {

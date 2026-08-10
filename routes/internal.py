@@ -14,13 +14,9 @@ router = APIRouter(
 
 @router.post("/send-reminders")
 def send_reminders(x_api_key: str = Header(None)):
-    print("Configured API KEY:", INTERNAL_API_KEY)
-    print("Received API KEY:", x_api_key)
+    return {
+        "configured": INTERNAL_API_KEY,
+        "received": x_api_key
+    }
 
-    if x_api_key != INTERNAL_API_KEY:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid API Key"
-        )
-
-    return send_monthly_reminders()
+    # return send_monthly_reminders()

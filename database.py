@@ -1,29 +1,29 @@
+import os
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-from config import DATABASE_URL
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    DATABASE_URL = "sqlite:///data/emi.db"
 
 
-# ----------------------------------------
-# Engine
-# ----------------------------------------
+connect_args = {}
 
 if DATABASE_URL.startswith("sqlite"):
-
-    engine = create_engine(
-        DATABASE_URL,
-        connect_args={"check_same_thread": False}
-    )
-
-else:
-
-    engine = create_engine(DATABASE_URL)
+    connect_args = {
+        "check_same_thread": False
+    }
 
 
-# ----------------------------------------
-# Session
-# ----------------------------------------
+engine = create_engine(
+    DATABASE_URL,
+    connect_args=connect_args
+)
+
 
 SessionLocal = sessionmaker(
     autocommit=False,
@@ -32,23 +32,13 @@ SessionLocal = sessionmaker(
 )
 
 
-# ----------------------------------------
-# Base
-# ----------------------------------------
-
 Base = declarative_base()
 
 
-# ----------------------------------------
-# Dependency
-# ----------------------------------------
-
 def get_db():
-
     db = SessionLocal()
 
     try:
         yield db
-
     finally:
         db.close()

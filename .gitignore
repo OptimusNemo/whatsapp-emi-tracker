@@ -60,3 +60,6 @@ htmlcov/
 # ==================================================
 *.tmp
 *.bak
+
+migrate_sqlite_to_postgres.py
+data/*.db

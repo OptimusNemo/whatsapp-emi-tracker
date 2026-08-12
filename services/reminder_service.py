@@ -1,14 +1,14 @@
-from datetime import date
+from datetime import date, datetime, timedelta
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
-from models import Loan, EMI
+from models import Loan, EMI, ReminderLog
 from services.notification_service import send_whatsapp
 
 
 def send_monthly_reminders(force=False):
-
     processed_loans = 0
     messages_sent = 0
 
@@ -22,8 +22,8 @@ def send_monthly_reminders(force=False):
         print("DAY   :", today.day)
         print("=" * 60)
 
-        # Reminder only on the 5th
-        if today.day != 5 and not force:
+        # Reminder only on the 10th unless force=True
+        if today.day != 10 and not force:
             print("Today is not reminder day.")
 
             return {
@@ -40,6 +40,73 @@ def send_monthly_reminders(force=False):
         for loan in loans:
 
             try:
+                # -----------------------------------------
+                # IDEMPOTENCY CHECK
+                # -----------------------------------------
+
+                existing_log = (
+                    db.query(ReminderLog)
+                    .filter(
+                        ReminderLog.loan_id == loan.id,
+                        ReminderLog.reminder_date == today
+                    )
+                    .first()
+                )
+
+                if existing_log:
+
+                    if existing_log.status == "sent":
+                        print(
+                            f"Reminder already sent for Loan "
+                            f"{loan.id} on {today}. Skipping."
+                        )
+                        continue
+
+                    # Retry stale processing records
+                    if (
+                        existing_log.status == "processing"
+                        and existing_log.created_at
+                        and datetime.utcnow() - existing_log.created_at
+                        < timedelta(minutes=10)
+                    ):
+                        print(
+                            f"Reminder currently processing for "
+                            f"Loan {loan.id}. Skipping."
+                        )
+                        continue
+
+                    # Failed/stale processing → retry
+                    existing_log.status = "processing"
+                    existing_log.created_at = datetime.utcnow()
+                    db.commit()
+
+                else:
+
+                    reminder_log = ReminderLog(
+                        loan_id=loan.id,
+                        reminder_date=today,
+                        status="processing"
+                    )
+
+                    db.add(reminder_log)
+
+                    try:
+                        db.commit()
+                    except IntegrityError:
+                        db.rollback()
+
+                        print(
+                            f"Reminder claim already exists for "
+                            f"Loan {loan.id}. Skipping."
+                        )
+                        continue
+
+                    existing_log = reminder_log
+
+                # -----------------------------------------
+                # FIND NEXT EMI
+                # -----------------------------------------
+
                 next_emi = (
                     db.query(EMI)
                     .filter(
@@ -50,21 +117,20 @@ def send_monthly_reminders(force=False):
                     .first()
                 )
 
-                # Loan has no pending EMI
                 if next_emi is None:
                     print(
                         f"Loan {loan.id} has no pending EMI. Skipping."
                     )
+
+                    existing_log.status = "sent"
+                    existing_log.sent_at = datetime.utcnow()
+                    db.commit()
+
                     continue
 
-                pending_emis = (
-                    db.query(EMI)
-                    .filter(
-                        EMI.loan_id == loan.id,
-                        EMI.status != "Paid"
-                    )
-                    .count()
-                )
+                # -----------------------------------------
+                # CALCULATE STATUS
+                # -----------------------------------------
 
                 pending_emi_list = (
                     db.query(EMI)
@@ -76,21 +142,24 @@ def send_monthly_reminders(force=False):
                     .all()
                 )
 
+                pending_emis = len(pending_emi_list)
+
                 outstanding = sum(
-                    (
-                        emi.amount
-                        + emi.carry_forward
-                        - emi.paid_amount
-                    )
+                    emi.amount
+                    + emi.carry_forward
+                    - emi.paid_amount
                     for emi in pending_emi_list
                 )
 
-                if next_emi.due_date:
-                    next_due = next_emi.due_date.strftime(
-                        "%d-%b-%Y"
-                    )
-                else:
-                    next_due = "Not Available"
+                next_due = (
+                    next_emi.due_date.strftime("%d-%b-%Y")
+                    if next_emi.due_date
+                    else "Not Available"
+                )
+
+                # -----------------------------------------
+                # MESSAGE
+                # -----------------------------------------
 
                 message = (
                     f"🔔 EMI REMINDER\n\n"
@@ -104,21 +173,34 @@ def send_monthly_reminders(force=False):
                     f"after payment is completed."
                 )
 
-                print(
-                    f"Sending reminder for Loan {loan.id}"
-                )
+                print(f"Sending reminder for Loan {loan.id}")
 
-                # Send to borrower
+                # -----------------------------------------
+                # SEND BORROWER
+                # -----------------------------------------
+
                 send_whatsapp(
                     loan.borrower_phone,
                     message
                 )
 
-                # Send to lender
+                # -----------------------------------------
+                # SEND LENDER
+                # -----------------------------------------
+
                 send_whatsapp(
                     loan.lender_phone,
                     message
                 )
+
+                # -----------------------------------------
+                # MARK AS SENT
+                # -----------------------------------------
+
+                existing_log.status = "sent"
+                existing_log.sent_at = datetime.utcnow()
+
+                db.commit()
 
                 processed_loans += 1
                 messages_sent += 2
@@ -130,23 +212,37 @@ def send_monthly_reminders(force=False):
             except Exception as ex:
 
                 print("=" * 60)
-                print(
-                    f"Reminder failed for Loan {loan.id}"
-                )
+                print(f"Reminder failed for Loan {loan.id}")
                 print(f"Error: {ex}")
                 print("=" * 60)
 
-                # Continue with the next loan
+                try:
+                    db.rollback()
+
+                    failed_log = (
+                        db.query(ReminderLog)
+                        .filter(
+                            ReminderLog.loan_id == loan.id,
+                            ReminderLog.reminder_date == today
+                        )
+                        .first()
+                    )
+
+                    if failed_log:
+                        failed_log.status = "failed"
+                        db.commit()
+
+                except Exception as log_error:
+                    print(
+                        f"Could not update reminder log: {log_error}"
+                    )
+
                 continue
 
         print("=" * 60)
         print("Monthly reminder completed.")
-        print(
-            f"Processed Loans : {processed_loans}"
-        )
-        print(
-            f"Messages Sent   : {messages_sent}"
-        )
+        print(f"Processed Loans : {processed_loans}")
+        print(f"Messages Sent   : {messages_sent}")
         print("=" * 60)
 
         return {
